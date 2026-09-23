@@ -8,6 +8,7 @@ the text in that area is read aloud with Kokoro TTS.
 """
 import asyncio
 import ctypes
+import ctypes.wintypes as wintypes
 import os
 import queue
 import re
@@ -40,6 +41,25 @@ try:
     ctypes.windll.shcore.SetProcessDpiAwareness(2)
 except Exception:
     ctypes.windll.user32.SetProcessDPIAware()
+
+
+def disable_power_throttling():
+    """Windows parks background apps on slow efficiency cores, which makes speech
+    generation several times slower and very inconsistent. Opt out of that."""
+    class PowerThrottlingState(ctypes.Structure):
+        _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+
+    k32 = ctypes.windll.kernel32
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    proc = k32.GetCurrentProcess()
+    state = PowerThrottlingState(1, 1, 0)  # control EXECUTION_SPEED, state = not throttled
+    k32.SetProcessInformation(proc, 4, ctypes.byref(state), ctypes.sizeof(state))  # 4 = ProcessPowerThrottling
+    k32.SetPriorityClass(proc, 0x80)  # HIGH_PRIORITY_CLASS
+
+
+disable_power_throttling()
 
 
 # ---------------- OCR (built-in Windows OCR) ----------------
@@ -88,10 +108,11 @@ for name in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
 
 print("Loading Kokoro...")
 _opts = ort.SessionOptions()
-_opts.intra_op_num_threads = 8  # much faster than the default on hybrid (P/E-core) CPUs
+_opts.intra_op_num_threads = min(6, os.cpu_count() or 6)  # more threads is slower on hybrid (P/E-core) CPUs
 kokoro = Kokoro.from_session(
     ort.InferenceSession(os.path.join(HERE, "kokoro-v1.0.onnx"), _opts, providers=["CPUExecutionProvider"]),
     os.path.join(HERE, "voices-v1.0.bin"))
+kokoro.create("Ready.", voice=VOICE, speed=SPEED, lang=LANG)  # warm-up: the first run is always slow
 speech_id = 0  # bumped to cancel whatever is currently being spoken
 
 
@@ -101,10 +122,23 @@ def stop_speaking():
     sd.stop()
 
 
-def speak(text: str):
-    """Generate and play sentence by sentence so speech starts quickly."""
-    my_id = speech_id
+def split_chunks(text: str) -> list[str]:
+    """Split into sentences, and keep the first chunk short so speech starts right away."""
     sentences = [s for s in re.split(r"(?<=[.!?;:])\s+", text) if s.strip()]
+    if not sentences:
+        return []
+    words = sentences[0].split()
+    if len(words) > 12:
+        # cut after the first comma within the first 12 words, otherwise after 8 words
+        cut = next((i + 1 for i, w in enumerate(words[:12]) if i >= 2 and w.endswith(",")), 8)
+        sentences[0:1] = [" ".join(words[:cut]), " ".join(words[cut:])]
+    return sentences
+
+
+def speak(text: str):
+    """Generate and play chunk by chunk so speech starts quickly."""
+    my_id = speech_id
+    sentences = split_chunks(text)
     chunks: queue.Queue = queue.Queue(maxsize=3)
 
     def generate():
