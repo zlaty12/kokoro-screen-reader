@@ -1,0 +1,8 @@
+# Kokoro model files (downloaded automatically on first run, too big for git)
+*.onnx
+*.bin
+*.part
+
+__pycache__/
+*.pyc
+.venv/
