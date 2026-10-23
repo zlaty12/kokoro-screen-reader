@@ -73,7 +73,7 @@ class AudioOutputTests(unittest.TestCase):
             namespace['stop_speaking']()
             worker.join(1)
 
-    def test_last_buffer_is_drained_including_bluetooth_tail(self):
+    def test_last_buffer_is_drained_without_extra_silence(self):
         driver = FakeDriver()
         audio = AudioOutput(driver)
         samples = np.arange(7, dtype=np.float32)
@@ -91,7 +91,9 @@ class AudioOutputTests(unittest.TestCase):
         else:
             self.fail('Callback did not request a graceful stop')
         np.testing.assert_array_equal(captured[:7], samples)
-        np.testing.assert_array_equal(captured[7:], np.zeros(5))
+        # Only the unused frame of the final device block is zero-filled.
+        self.assertEqual(len(captured), 8)
+        np.testing.assert_array_equal(captured[7:], np.zeros(1))
         waiter = threading.Thread(target=audio.wait)
         waiter.start()
         waiter.join(.05)

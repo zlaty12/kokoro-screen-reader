@@ -12,10 +12,9 @@ class AudioOutput:
         self.current = None
 
     def play(self, samples, rate):
-        # Preserve a short quiet tail for Bluetooth output pipelines. In contrast
-        # to sounddevice.play(), normal completion uses CallbackStop, not Abort.
-        data = np.concatenate((np.asarray(samples, dtype=np.float32),
-                               np.zeros(round(rate * .3), dtype=np.float32)))
+        # Drain the original audio without appending an extra silent pause.
+        # Normal completion uses CallbackStop, not Abort.
+        data = np.asarray(samples, dtype=np.float32)
         position = 0
         finished = threading.Event()
 
