@@ -19,7 +19,7 @@ import urllib.request
 
 import mss
 import onnxruntime as ort
-import sounddevice as sd
+from audio_output import AudioOutput
 from kokoro_onnx import Kokoro
 from PIL import Image, ImageEnhance, ImageTk
 from pynput import mouse
@@ -114,12 +114,15 @@ kokoro = Kokoro.from_session(
     os.path.join(HERE, "voices-v1.0.bin"))
 kokoro.create("Ready.", voice=VOICE, speed=SPEED, lang=LANG)  # warm-up: the first run is always slow
 speech_id = 0  # bumped to cancel whatever is currently being spoken
+audio = AudioOutput()
+playback_lock = threading.Lock()
 
 
 def stop_speaking():
     global speech_id
-    speech_id += 1
-    sd.stop()
+    with playback_lock:
+        speech_id += 1
+        audio.stop()
 
 
 def split_chunks(text: str) -> list[str]:
@@ -158,13 +161,13 @@ def speak(text: str):
         if item is None:
             break
         samples, sr = item
-        if my_id != speech_id:
-            break
-        sd.play(samples, sr)
-        # wait in small steps so we can be interrupted
-        end = time.time() + len(samples) / sr
-        while time.time() < end and my_id == speech_id:
-            time.sleep(0.05)
+        with playback_lock:
+            if my_id != speech_id:
+                break
+            audio.play(samples, sr)
+        # Wait for output buffers to drain, not just the nominal sample duration.
+        # Keep the lock free so stop_speaking() can interrupt the stream.
+        audio.wait()
 
 
 def read_image(img: Image.Image):
